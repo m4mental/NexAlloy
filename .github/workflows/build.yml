@@ -1,0 +1,73 @@
+name: Build Personal LSPosed Module
+
+on:
+  workflow_dispatch: # मैन्युअल रूप से बिल्ड रन करने के लिए
+  push:
+    branches:
+      - main
+      - master
+
+jobs:
+  build:
+    name: Build LSPosed APK
+    runs-on: ubuntu-latest
+
+    steps:
+      # 1. कोड चेकआउट करना (सबमॉड्यूल्स के साथ)
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+        with:
+          submodules: recursive
+          fetch-depth: 0
+
+      # 2. आटोमैटिक थीम ओवरराइड स्क्रिप्ट (Python)
+      # यह स्क्रिप्ट कंपाइल होने से ठीक पहले थीम फ़ाइल को बदलकर Pure Black (#000000) कर देगी
+      - name: Auto Patch AMOLED Pure Black Theme
+        run: |
+          python -c '
+          import os
+
+          filepath = "morphe-patches/patches/src/main/kotlin/app/morphe/patches/youtube/layout/theme/ThemePatch.kt"
+          if os.path.exists(filepath):
+              with open(filepath, "r") as file:
+                  content = file.read()
+              
+              # 1. डार्क थीम कलर प्रिफरेंस को सीधे प्योर ब्लैक (#000000) से रिप्लेस करें
+              content = content.replace("darkThemeBackgroundColorOption.value!!", "\"#000000\"")
+              
+              # 2. मटेरियल यू डार्क फ्लैग को बायपास करके फॉल्स (false) करें
+              content = content.replace("val isMaterialYouDark = darkThemeBackgroundColorOption.value!!.startsWith(\"@android:color/system_\")", "val isMaterialYouDark = false")
+              content = content.replace("val isMaterialYouDark = \"#000000\".startsWith(\"@android:color/system_\")", "val isMaterialYouDark = false")
+              
+              # 3. baseThemeResourcePatch में डार्क कलर ओवरराइड पैरामीटर जोड़ें
+              content = content.replace("lightColorReplacement = { lightThemeBackgroundColor!! },", "lightColorReplacement = { lightThemeBackgroundColor!! },\n                darkColorReplacement = { \"#000000\" },")
+              
+              with open(filepath, "w") as file:
+                  file.write(content)
+              print("ThemePatch.kt successfully patched for Pure Pitch Black!")
+          else:
+              print("ERROR: ThemePatch.kt not found at expected path!")
+          '
+
+      # 3. जावा एनवायरनमेंट (JDK 17) सेटअप करना
+      - name: Set up JDK 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: 'zulu'
+          java-version: '17'
+          cache: 'gradle'
+
+      # 4. Gradle को परमिशन देना
+      - name: Grant execute permission for gradlew
+        run: chmod +x gradlew
+
+      # 5. Debug APK बिल्ड करना (ऑटो-साइन के साथ)
+      - name: Build with Gradle
+        run: ./gradlew :app:assembleDebug --stacktrace
+
+      # 6. तैयार APK को अपलोड करना
+      - name: Upload APK Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: NexAlloy-YouTube-Only-Debug
+          path: app/build/outputs/apk/debug/*.apk
