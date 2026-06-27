@@ -1,0 +1,46 @@
+name: Build Personal LSPosed Module
+
+on:
+  workflow_dispatch: # यह आपको GitHub Actions टैब से मैन्युअल रूप से बिल्ड ट्रिगर करने की सुविधा देगा
+  push:
+    branches:
+      - main
+      - master
+
+jobs:
+  build:
+    name: Build LSPosed APK
+    runs-on: ubuntu-latest
+
+    steps:
+      # 1. कोड चेकआउट करना (सबमॉड्यूल्स के साथ)
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+        with:
+          submodules: recursive
+          fetch-depth: 0
+
+      # 2. जावा एनवायरनमेंट (JDK 17) सेटअप करना
+      - name: Set up JDK 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: 'zulu'
+          java-version: '17'
+          cache: 'gradle'
+
+      # 3. Gradle एग्जीक्यूट परमिशन देना
+      - name: Grant execute permission for gradlew
+        run: chmod +x gradlew
+
+      # 4. Debug APK कंपाइल करना
+      # नोट: Debug बिल्ड बनाने से यह अपने आप एक डिफॉल्ट की (Debug Key) से साइन हो जाता है,
+      # जिससे आपको रिलीज कीज़ (Keystore) मैनेज करने का झंझट नहीं रहता और आप इसे आसानी से इंस्टॉल कर सकते हैं।
+      - name: Build with Gradle
+        run: ./gradlew :app:assembleDebug --stacktrace
+
+      # 5. तैयार APK को आर्टिफैक्ट के रूप में अपलोड करना
+      - name: Upload APK Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: NexAlloy-YouTube-Only-Debug
+          path: app/build/outputs/apk/debug/*.apk
