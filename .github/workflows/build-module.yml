@@ -199,17 +199,21 @@ fun inContext(lpparam: LoadPackageParam, f: (Application) -> Unit) {
           EOF
           python patch.py
 
-      # 3. नया वैध की-स्टोर (Keystore) और हस्ताक्षर सेटिंग्स (.properties) फ़ाइलें जनरेट करना
-      - name: Generate Fresh and Valid Keystore
+      # 3. नया वैध JKS की-स्टोर (JKS-type Keystore) और हस्ताक्षर सेटिंग्स बनाना
+      # यहाँ '-storetype JKS' जोड़ दिया गया है ताकि पुराना ग्रैडल पार्सर इसे बिना किसी सिंटैक्स टकराव के पढ़ सके।
+      - name: Generate Fresh and Valid Keystore (JKS Type)
         run: |
           rm -f key.jks
           rm -f app/key.jks
           
-          # एक नया वैध JKS की-स्टोर उत्पन्न करना
-          keytool -genkeypair -v -keystore key.jks -alias key -keyalg RSA -keysize 2048 -validity 10000 -storepass 123456 -keypass 123456 -dname "CN=NexAlloy, OU=NexAlloy, O=NexAlloy, L=NexAlloy, S=NexAlloy, C=US"
+          # JKS स्टोर-टाइप के साथ नया की-स्टोर बनाना
+          keytool -genkeypair -v -keystore key.jks -storetype JKS -alias key -keyalg RSA -keysize 2048 -validity 10000 -storepass 123456 -keypass 123456 -dname "CN=NexAlloy, OU=NexAlloy, O=NexAlloy, L=NexAlloy, S=NexAlloy, C=US"
+          
+          # सुरक्षा के लिए इसे ऐप फोल्डर में भी कॉपी करना
+          cp key.jks app/key.jks
           
           # रूट और ऐप फोल्डर्स में हस्ताक्षर सेटिंग्स (signing.properties) लिखना
-          echo "storeFile=../key.jks" > signing.properties
+          echo "storeFile=key.jks" > signing.properties
           echo "storePassword=123456" >> signing.properties
           echo "keyAlias=key" >> signing.properties
           echo "keyPassword=123456" >> signing.properties
@@ -219,7 +223,7 @@ fun inContext(lpparam: LoadPackageParam, f: (Application) -> Unit) {
           echo "keyAlias=key" >> app/signing.properties
           echo "keyPassword=123456" >> app/signing.properties
           
-          # इसके अलावा gradle.properties में भी सेटिंग्स जोड़ना
+          # gradle.properties में भी सेटिंग्स अपेंड (जोड़ना) करना
           echo "storeFile=key.jks" >> gradle.properties
           echo "storePassword=123456" >> gradle.properties
           echo "keyAlias=key" >> gradle.properties
