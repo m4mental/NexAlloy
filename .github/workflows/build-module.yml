@@ -168,4 +168,84 @@ jobs:
                       except Exception as e:
                           pass
 
-          # ख) ThemePatch.kt के अंदर रेगुलर एक्सप
+          # ख) ThemePatch.kt के अंदर रेगुलर एक्सप्रेशन (Regex) के ज़रिए AMOLED फ़ोर्स करना
+          theme_filepath = "morphe-patches/patches/src/main/kotlin/app/morphe/patches/youtube/layout/theme/ThemePatch.kt"
+          if os.path.exists(theme_filepath):
+              with open(theme_filepath, "r", encoding="utf-8") as file:
+                  content = file.read()
+              
+              # darkThemeBackgroundColorOption.value!! को हमेशा "#000000" पर सेट करना
+              content = re.sub(r"darkThemeBackgroundColorOption\.value!!", '"#000000"', content)
+              
+              # isMaterialYouDark को फॉल्स (false) करना
+              content = re.sub(r"val\s+isMaterialYouDark\s*=\s*darkThemeBackgroundColorOption\.value!!\.startsWith\(.*?\)", "val isMaterialYouDark = false", content)
+              content = re.sub(r"val\s+isMaterialYouDark\s*=\s*\"#000000\"\.startsWith\(.*?\)", "val isMaterialYouDark = false", content)
+              
+              # baseThemeResourcePatch में darkColorReplacement पैरामीटर inject करना
+              content = re.sub(
+                  r"(lightColorReplacement\s*=\s*\{\s*lightThemeBackgroundColor!!\s*\},)",
+                  r'\1\n                darkColorReplacement = { "#000000" },',
+                  content
+              )
+              
+              with open(theme_filepath, "w", encoding="utf-8") as file:
+                  file.write(content)
+              print("ThemePatch.kt successfully patched!")
+          else:
+              print("ThemePatch.kt not found!")
+
+          # ग) सभी Gradle फ़ाइलों में से रिलीज साइनिंग (signingConfigs) को पूरी तरह से बायपास (कमेंट-आउट) करना
+          # इससे Gradle कभी भी 'key.jks' को पढ़ने का प्रयास नहीं करेगा और एरर हमेशा के लिए दूर हो जाएगा।
+          print("Disabling signing configurations in all build.gradle files...")
+          for root, dirs, files in os.walk("."):
+              for file in files:
+                  if file.endswith(".gradle") or file.endswith(".gradle.kts"):
+                      filepath = os.path.join(root, file)
+                      try:
+                          with open(filepath, "r", encoding="utf-8") as f:
+                              content = f.read()
+                          
+                          lines = content.splitlines()
+                          new_lines = []
+                          for line in lines:
+                              if any(x in line for x in ["storeFile", "storePassword", "keyAlias", "keyPassword", "signingConfigs.getByName", "signingConfigs.release"]):
+                                  new_lines.append("// " + line)
+                              elif "signingConfig = signingConfigs" in line or "signingConfig signingConfigs" in line:
+                                  new_lines.append("// " + line)
+                              else:
+                                  new_lines.append(line)
+                          
+                          modified = "\n".join(new_lines)
+                          if modified != content:
+                              with open(filepath, "w", encoding="utf-8") as f:
+                                  f.write(modified)
+                              print(f"Disabled signing configs in: {filepath}")
+                      except Exception as e:
+                          pass
+          EOF
+          python patch.py
+
+      # 3. जावा सेटअप (JDK 17)
+      - name: Set up JDK 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: 'zulu'
+          java-version: '17'
+          cache: 'gradle'
+
+      # 4. Gradle को एग्जीक्यूट परमिशन देना
+      - name: Grant execute permission for gradlew
+        run: chmod +x gradlew
+
+      # 5. Debug APK कंपाइल करना (एंड्रॉइड के डिफ़ॉल्ट साइनिंग की के साथ)
+      # चूंकि हमने रिलीज साइनिंग डिसेबल कर दी है, इसलिए यह एंड्रॉइड की अपनी सुरक्षित डिफ़ॉल्ट की से साइन हो जाएगा
+      - name: Build with Gradle
+        run: ./gradlew :app:assembleDebug --stacktrace
+
+      # 6. तैयार कस्टमाइज्ड APK को अपलोड करना (Dynamic Wildcard Search के साथ)
+      # यह किसी भी फोल्डर में बने हुए एपीके को आटोमैटिक सर्च करके अपलोड कर देगा
+      - name: Upload APK Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: NexAlloy-YouTube-Only-Debug
+          path: "**/build/outputs/apk/**/*.apk"
