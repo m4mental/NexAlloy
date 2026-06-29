@@ -20,8 +20,125 @@ jobs:
           submodules: recursive
           fetch-depth: 0
 
-      # 2. आटोमैटिक थीम ओवरराइड, यूट्यूब-ओनली और साइनिंग बायपास मॉडिफिकेशन (पायथन स्क्रिप्ट)
-      - name: Auto Patch Morphe Theme & Disable Signing Configs
+      # 2क. MainHook.kt को आटोमैटिक ओवरराइट करना (यूट्यूब-ओनली फ़िल्टर और AMOLED फ़ोर्स-राइट)
+      # इसमें सभी लाइनों को गिटहब सिंटैक्स के अनुकूल इंडेंट किया गया है ताकि कोई पार्सिंग एरर न आए।
+      - name: Overwrite MainHook.kt
+        run: |
+          cat << 'EOF' > app/src/main/java/io/github/nexalloy/MainHook.kt
+          package io.github.nexalloy
+
+          import android.app.Application
+          import android.content.Context
+          import android.util.Log
+          import app.morphe.extension.shared.ResourceType
+          import app.morphe.extension.shared.ResourceUtils
+          import app.morphe.extension.shared.Utils
+          import de.robv.android.xposed.IXposedHookLoadPackage
+          import de.robv.android.xposed.IXposedHookZygoteInit
+          import de.robv.android.xposed.IXposedHookZygoteInit.StartupParam
+          import de.robv.android.xposed.XC_MethodHook
+          import de.robv.android.xposed.XSharedPreferences
+          import de.robv.android.xposed.XposedBridge
+          import de.robv.android.xposed.XposedHelpers
+          import de.robv.android.xposed.callbacks.XC_LoadPackage.LoadPackageParam
+          import io.github.nexalloy.common.UpdateChecker
+          import io.github.nexalloy.morphe.ResourceFinder
+          import io.github.nexalloy.morphe.resourceMappings
+
+          class MainHook : IXposedHookLoadPackage, IXposedHookZygoteInit {
+              lateinit var startupParam: StartupParam
+              lateinit var lpparam: LoadPackageParam
+              lateinit var app: Application
+              var targetPackageName: String? = null
+
+              fun shouldHook(packageName: String): Boolean {
+                  // केवल यूट्यूब को ही हुक होने दें (YouTube Only Filter)
+                  if (packageName != "com.google.android.youtube") return false
+                  if (!patchesByPackage.containsKey(packageName)) return false
+                  if (targetPackageName == null) targetPackageName = packageName
+                  return targetPackageName == packageName
+              }
+
+              override fun handleLoadPackage(lpparam: LoadPackageParam) {
+                  if (!lpparam.isFirstApplication) return
+                  if (!shouldHook(lpparam.packageName)) return
+                  this.lpparam = lpparam
+
+                  inContext(lpparam) { app ->
+                      this.app = app
+                      if (isReVancedPatched(lpparam)) {
+                          Utils.showToastLong("NexAlloy module does not work with patched app")
+                          return@inContext
+                      }
+
+                      resourceMappings = object : ResourceFinder {
+                          override operator fun get(type: String, name: String): Int {
+                              val id = ResourceUtils.getIdentifier(ResourceType.fromValue(type), name)
+                              if (id == 0) throw Exception("Could not find resource type: $type name: $name")
+                              return id
+                          }
+                      }
+
+                      val patches = patchesByPackage[lpparam.packageName] ?: return@inContext
+                      PatchExecutor(app, lpparam).applyPatches(patches)
+                  }
+              }
+
+              private fun isReVancedPatched(lpparam: LoadPackageParam): Boolean {
+                  return runCatching {
+                      lpparam.classLoader.loadClass("app.morphe.extension.shared.Utils")
+                  }.isSuccess || runCatching {
+                      lpparam.classLoader.loadClass("app.morphe.extension.shared.utils.Utils")
+                      }.isSuccess || runCatching {
+                          lpparam.classLoader.loadClass("app.revanced.integrations.shared.Utils")
+                      }.isSuccess || runCatching {
+                          lpparam.classLoader.loadClass("app.revanced.integrations.shared.utils.Utils")
+                      }.isSuccess
+              }
+
+              override fun initZygote(startupParam: StartupParam) {
+                  this.startupParam = startupParam
+                  XposedInit = startupParam
+              }
+          }
+
+          fun inContext(lpparam: LoadPackageParam, f: (Application) -> Unit) {
+              val appClazz = XposedHelpers.findClass(lpparam.appInfo.className, lpparam.classLoader)
+              XposedBridge.hookMethod(appClazz.getMethod("onCreate"), object : XC_MethodHook() {
+                  override fun beforeHookedMethod(param: MethodHookParam) {
+                      val app = param.thisObject as Application
+                      Utils.setContext(app)
+                      
+                      // यूट्यूब खुलने से ठीक पहले उसकी सभी प्रिफरेंस सेटिंग्स में प्योर ब्लैक (#000000) फोर्स-राइट करना
+                      val prefNames = arrayOf("prefs", "morphe_preferences", "app.morphe.preferences", "nexalloy_preferences", "${app.packageName}_preferences")
+                      for (prefName in prefNames) {
+                          try {
+                              val p = app.getSharedPreferences(prefName, Context.MODE_PRIVATE)
+                              p.edit()
+                               .putString("darkThemeBackgroundColor", "#000000")
+                               .putString("dark_theme_background_color", "#000000")
+                               .putString("morphe_dark_theme_background_color", "#000000")
+                               .putString("morphe_dark_theme_color", "#000000")
+                               .putBoolean("amoled_theme", true)
+                               .putBoolean("amoled", true)
+                               .apply()
+                          } catch (e: Exception) {}
+                      }
+                      
+                      f(app)
+                      if (XposedInit.modulePath.startsWith("/data/app/")) {
+                          val prefs = XSharedPreferences(BuildConfig.APPLICATION_ID, "prefs")
+                          if (!prefs.file.canRead() || !prefs.getBoolean("disable_auto_check_update", false)) {
+                              UpdateChecker().hookNewActivity()
+                          }
+                      }
+                  }
+              })
+          }
+          EOF
+
+      # 2ख. पायथन स्क्रिप्ट के ज़रिए थीम और ग्रैडल सेटिंग्स को आटोमैटिक पैच करना
+      - name: Patch Theme and Gradle Files
         run: |
           cat << 'EOF' > patch.py
           import os
@@ -51,203 +168,4 @@ jobs:
                       except Exception as e:
                           pass
 
-          # ख) ThemePatch.kt के अंदर रेगुलर एक्सप्रेशन (Regex) के ज़रिए AMOLED फ़ोर्स करना
-          theme_filepath = "morphe-patches/patches/src/main/kotlin/app/morphe/patches/youtube/layout/theme/ThemePatch.kt"
-          if os.path.exists(theme_filepath):
-              with open(theme_filepath, "r", encoding="utf-8") as file:
-                  content = file.read()
-              
-              # darkThemeBackgroundColorOption.value!! को हमेशा "#000000" पर सेट करना
-              content = re.sub(r"darkThemeBackgroundColorOption\.value!!", '"#000000"', content)
-              
-              # isMaterialYouDark को फॉल्स (false) करना
-              content = re.sub(r"val\s+isMaterialYouDark\s*=\s*darkThemeBackgroundColorOption\.value!!\.startsWith\(.*?\)", "val isMaterialYouDark = false", content)
-              content = re.sub(r"val\s+isMaterialYouDark\s*=\s*\"#000000\"\.startsWith\(.*?\)", "val isMaterialYouDark = false", content)
-              
-              # baseThemeResourcePatch में darkColorReplacement पैरामीटर inject करना
-              content = re.sub(
-                  r"(lightColorReplacement\s*=\s*\{\s*lightThemeBackgroundColor!!\s*\},)",
-                  r'\1\n                darkColorReplacement = { "#000000" },',
-                  content
-              )
-              
-              with open(theme_filepath, "w", encoding="utf-8") as file:
-                  file.write(content)
-              print("ThemePatch.kt successfully patched!")
-          else:
-              print("ThemePatch.kt not found!")
-
-          # ग) MainHook.kt में बदलाव करना (यूट्यूब के प्रिफरेंस में #000000 को फ़ोर्स-राइट करना)
-          main_hook_path = "app/src/main/java/io/github/nexalloy/MainHook.kt"
-          if os.path.exists(main_hook_path):
-              new_main_hook = """package io.github.nexalloy
-
-import android.app.Application
-import android.content.Context
-import android.util.Log
-import app.morphe.extension.shared.ResourceType
-import app.morphe.extension.shared.ResourceUtils
-import app.morphe.extension.shared.Utils
-import de.robv.android.xposed.IXposedHookLoadPackage
-import de.robv.android.xposed.IXposedHookZygoteInit
-import de.robv.android.xposed.IXposedHookZygoteInit.StartupParam
-import de.robv.android.xposed.XC_MethodHook
-import de.robv.android.xposed.XSharedPreferences
-import de.robv.android.xposed.XposedBridge
-import de.robv.android.xposed.XposedHelpers
-import de.robv.android.xposed.callbacks.XC_LoadPackage.LoadPackageParam
-import io.github.nexalloy.common.UpdateChecker
-import io.github.nexalloy.morphe.ResourceFinder
-import io.github.nexalloy.morphe.resourceMappings
-
-class MainHook : IXposedHookLoadPackage, IXposedHookZygoteInit {
-    lateinit var startupParam: StartupParam
-    lateinit var lpparam: LoadPackageParam
-    lateinit var app: Application
-    var targetPackageName: String? = null
-
-    fun shouldHook(packageName: String): Boolean {
-        // केवल यूट्यूब को ही हुक होने दें (YouTube Only Filter)
-        if (packageName != "com.google.android.youtube") return false
-        if (!patchesByPackage.containsKey(packageName)) return false
-        if (targetPackageName == null) targetPackageName = packageName
-        return targetPackageName == packageName
-    }
-
-    override fun handleLoadPackage(lpparam: LoadPackageParam) {
-        if (!lpparam.isFirstApplication) return
-        if (!shouldHook(lpparam.packageName)) return
-        this.lpparam = lpparam
-
-        inContext(lpparam) { app ->
-            this.app = app
-            if (isReVancedPatched(lpparam)) {
-                Utils.showToastLong("NexAlloy module does not work with patched app")
-                return@inContext
-            }
-
-            resourceMappings = object : ResourceFinder {
-                override operator fun get(type: String, name: String): Int {
-                    val id = ResourceUtils.getIdentifier(ResourceType.fromValue(type), name)
-                    if (id == 0) throw Exception("Could not find resource type: $type name: $name")
-                    return id
-                }
-            }
-
-            val patches = patchesByPackage[lpparam.packageName] ?: return@inContext
-            PatchExecutor(app, lpparam).applyPatches(patches)
-        }
-    }
-
-    private fun isReVancedPatched(lpparam: LoadPackageParam): Boolean {
-        return runCatching {
-            lpparam.classLoader.loadClass("app.morphe.extension.shared.Utils")
-        }.isSuccess || runCatching {
-            lpparam.classLoader.loadClass("app.morphe.extension.shared.utils.Utils")
-        }.isSuccess || runCatching {
-            lpparam.classLoader.loadClass("app.revanced.integrations.shared.Utils")
-        }.isSuccess || runCatching {
-            lpparam.classLoader.loadClass("app.revanced.integrations.shared.utils.Utils")
-        }.isSuccess
-    }
-
-    override fun initZygote(startupParam: StartupParam) {
-        this.startupParam = startupParam
-        XposedInit = startupParam
-    }
-}
-
-fun inContext(lpparam: LoadPackageParam, f: (Application) -> Unit) {
-    val appClazz = XposedHelpers.findClass(lpparam.appInfo.className, lpparam.classLoader)
-    XposedBridge.hookMethod(appClazz.getMethod("onCreate"), object : XC_MethodHook() {
-        override fun beforeHookedMethod(param: MethodHookParam) {
-            val app = param.thisObject as Application
-            Utils.setContext(app)
-            
-            // यूट्यूब खुलने से ठीक पहले उसकी सभी प्रिफरेंस सेटिंग्स में प्योर ब्लैक (#000000) फोर्स-राइट करना
-            val prefNames = arrayOf("prefs", "morphe_preferences", "app.morphe.preferences", "nexalloy_preferences", "${app.packageName}_preferences")
-            for (prefName in prefNames) {
-                try {
-                    val p = app.getSharedPreferences(prefName, Context.MODE_PRIVATE)
-                    p.edit()
-                     .putString("darkThemeBackgroundColor", "#000000")
-                     .putString("dark_theme_background_color", "#000000")
-                     .putString("morphe_dark_theme_background_color", "#000000")
-                     .putString("morphe_dark_theme_color", "#000000")
-                     .putBoolean("amoled_theme", true)
-                     .putBoolean("amoled", true)
-                     .apply()
-                } catch (e: Exception) {}
-            }
-            
-            f(app)
-            if (XposedInit.modulePath.startsWith("/data/app/")) {
-                val prefs = XSharedPreferences(BuildConfig.APPLICATION_ID, "prefs")
-                if (!prefs.file.canRead() || !prefs.getBoolean("disable_auto_check_update", false)) {
-                    UpdateChecker().hookNewActivity()
-                }
-            }
-        }
-    })
-}
-"""
-              with open(main_hook_path, "w") as file:
-                  file.write(new_main_hook)
-              print("MainHook.kt successfully patched!")
-          else:
-              print("MainHook.kt not found!")
-
-          # घ) सभी Gradle फ़ाइलों में से रिलीज साइनिंग (signingConfigs) को पूरी तरह से बायपास (कमेंट-आउट) करना
-          # इससे Gradle कभी भी 'key.jks' को पढ़ने का प्रयास नहीं करेगा और एरर हमेशा के लिए दूर हो जाएगा।
-          print("Disabling signing configurations in all build.gradle files...")
-          for root, dirs, files in os.walk("."):
-              for file in files:
-                  if file.endswith(".gradle") or file.endswith(".gradle.kts"):
-                      filepath = os.path.join(root, file)
-                      try:
-                          with open(filepath, "r", encoding="utf-8") as f:
-                              content = f.read()
-                          
-                          lines = content.splitlines()
-                          new_lines = []
-                          for line in lines:
-                              if any(x in line for x in ["storeFile", "storePassword", "keyAlias", "keyPassword", "signingConfigs.getByName", "signingConfigs.release"]):
-                                  new_lines.append("// " + line)
-                              elif "signingConfig = signingConfigs" in line or "signingConfig signingConfigs" in line:
-                                  new_lines.append("// " + line)
-                              else:
-                                  new_lines.append(line)
-                          
-                          modified = "\n".join(new_lines)
-                          if modified != content:
-                              with open(filepath, "w", encoding="utf-8") as f:
-                                  f.write(modified)
-                              print(f"Disabled signing configs in: {filepath}")
-                      except Exception as e:
-                          pass
-          EOF
-          python patch.py
-
-      # 3. जावा सेटअप (JDK 17)
-      - name: Set up JDK 17
-        uses: actions/setup-java@v4
-        with:
-          distribution: 'zulu'
-          java-version: '17'
-          cache: 'gradle'
-
-      # 4. Gradle को एग्जीक्यूट परमिशन देना
-      - name: Grant execute permission for gradlew
-        run: chmod +x gradlew
-
-      # 5. Debug APK कंपाइल करना (एंड्रॉइड के डिफ़ॉल्ट साइनिंग की के साथ)
-      # चूंकि हमने रिलीज साइनिंग डिसेबल कर दी है, इसलिए यह एंड्रॉइड की अपनी सुरक्षित डिफ़ॉल्ट की से साइन हो जाएगा
-      - name: Build with Gradle
-        run: ./gradlew :app:assembleDebug --stacktrace
-
-      # 6. तैयार कस्टमाइज्ड APK को अपलोड करना
-      - name: Upload APK Artifact
-        uses: actions/upload-artifact@v4
-        with:
-          name: NexAlloy-YouTube-Only-Debug
-          path: app/build/outputs/apk/debug/*.apk
+          # ख) ThemePatch.kt के अंदर रेगुलर एक्सप
