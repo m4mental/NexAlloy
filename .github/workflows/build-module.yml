@@ -20,8 +20,8 @@ jobs:
           submodules: recursive
           fetch-depth: 0
 
-      # 2. आटोमैटिक थीम ओवरराइड और यूट्यूब-ओनली मॉडिफिकेशन (पायथन स्क्रिप्ट)
-      - name: Auto Patch Morphe Theme & YouTube-Only Optimization
+      # 2. आटोमैटिक थीम ओवरराइड, यूट्यूब-ओनली और साइनिंग बायपास मॉडिफिकेशन (पायथन स्क्रिप्ट)
+      - name: Auto Patch Morphe Theme & Disable Signing Configs
         run: |
           cat << 'EOF' > patch.py
           import os
@@ -64,7 +64,7 @@ jobs:
               content = re.sub(r"val\s+isMaterialYouDark\s*=\s*darkThemeBackgroundColorOption\.value!!\.startsWith\(.*?\)", "val isMaterialYouDark = false", content)
               content = re.sub(r"val\s+isMaterialYouDark\s*=\s*\"#000000\"\.startsWith\(.*?\)", "val isMaterialYouDark = false", content)
               
-              # baseThemeResourcePatch में darkColorReplacement पैरामीटर इंजेक्ट करना
+              # baseThemeResourcePatch में darkColorReplacement पैरामीटर inject करना
               content = re.sub(
                   r"(lightColorReplacement\s*=\s*\{\s*lightThemeBackgroundColor!!\s*\},)",
                   r'\1\n                darkColorReplacement = { "#000000" },',
@@ -196,40 +196,39 @@ fun inContext(lpparam: LoadPackageParam, f: (Application) -> Unit) {
               print("MainHook.kt successfully patched!")
           else:
               print("MainHook.kt not found!")
+
+          # घ) सभी Gradle फ़ाइलों में से रिलीज साइनिंग (signingConfigs) को पूरी तरह से बायपास (कमेंट-आउट) करना
+          # इससे Gradle कभी भी 'key.jks' को पढ़ने का प्रयास नहीं करेगा और एरर हमेशा के लिए दूर हो जाएगा।
+          print("Disabling signing configurations in all build.gradle files...")
+          for root, dirs, files in os.walk("."):
+              for file in files:
+                  if file.endswith(".gradle") or file.endswith(".gradle.kts"):
+                      filepath = os.path.join(root, file)
+                      try:
+                          with open(filepath, "r", encoding="utf-8") as f:
+                              content = f.read()
+                          
+                          lines = content.splitlines()
+                          new_lines = []
+                          for line in lines:
+                              if any(x in line for x in ["storeFile", "storePassword", "keyAlias", "keyPassword", "signingConfigs.getByName", "signingConfigs.release"]):
+                                  new_lines.append("// " + line)
+                              elif "signingConfig = signingConfigs" in line or "signingConfig signingConfigs" in line:
+                                  new_lines.append("// " + line)
+                              else:
+                                  new_lines.append(line)
+                          
+                          modified = "\n".join(new_lines)
+                          if modified != content:
+                              with open(filepath, "w", encoding="utf-8") as f:
+                                  f.write(modified)
+                              print(f"Disabled signing configs in: {filepath}")
+                      except Exception as e:
+                          pass
           EOF
           python patch.py
 
-      # 3. नया वैध JKS की-स्टोर (JKS-type Keystore) और हस्ताक्षर सेटिंग्स बनाना
-      # यहाँ '-storetype JKS' जोड़ दिया गया है ताकि पुराना ग्रैडल पार्सर इसे बिना किसी सिंटैक्स टकराव के पढ़ सके।
-      - name: Generate Fresh and Valid Keystore (JKS Type)
-        run: |
-          rm -f key.jks
-          rm -f app/key.jks
-          
-          # JKS स्टोर-टाइप के साथ नया की-स्टोर बनाना
-          keytool -genkeypair -v -keystore key.jks -storetype JKS -alias key -keyalg RSA -keysize 2048 -validity 10000 -storepass 123456 -keypass 123456 -dname "CN=NexAlloy, OU=NexAlloy, O=NexAlloy, L=NexAlloy, S=NexAlloy, C=US"
-          
-          # सुरक्षा के लिए इसे ऐप फोल्डर में भी कॉपी करना
-          cp key.jks app/key.jks
-          
-          # रूट और ऐप फोल्डर्स में हस्ताक्षर सेटिंग्स (signing.properties) लिखना
-          echo "storeFile=key.jks" > signing.properties
-          echo "storePassword=123456" >> signing.properties
-          echo "keyAlias=key" >> signing.properties
-          echo "keyPassword=123456" >> signing.properties
-          
-          echo "storeFile=../key.jks" > app/signing.properties
-          echo "storePassword=123456" >> app/signing.properties
-          echo "keyAlias=key" >> app/signing.properties
-          echo "keyPassword=123456" >> app/signing.properties
-          
-          # gradle.properties में भी सेटिंग्स अपेंड (जोड़ना) करना
-          echo "storeFile=key.jks" >> gradle.properties
-          echo "storePassword=123456" >> gradle.properties
-          echo "keyAlias=key" >> gradle.properties
-          echo "keyPassword=123456" >> gradle.properties
-
-      # 4. जावा सेटअप (JDK 17)
+      # 3. जावा सेटअप (JDK 17)
       - name: Set up JDK 17
         uses: actions/setup-java@v4
         with:
@@ -237,15 +236,16 @@ fun inContext(lpparam: LoadPackageParam, f: (Application) -> Unit) {
           java-version: '17'
           cache: 'gradle'
 
-      # 5. Gradle को एग्जीक्यूट परमिशन देना
+      # 4. Gradle को एग्जीक्यूट परमिशन देना
       - name: Grant execute permission for gradlew
         run: chmod +x gradlew
 
-      # 6. Debug APK कंपाइल करना
+      # 5. Debug APK कंपाइल करना (एंड्रॉइड के डिफ़ॉल्ट साइनिंग की के साथ)
+      # चूंकि हमने रिलीज साइनिंग डिसेबल कर दी है, इसलिए यह एंड्रॉइड की अपनी सुरक्षित डिफ़ॉल्ट की से साइन हो जाएगा
       - name: Build with Gradle
         run: ./gradlew :app:assembleDebug --stacktrace
 
-      # 7. तैयार कस्टमाइज्ड APK को अपलोड करना
+      # 6. तैयार कस्टमाइज्ड APK को अपलोड करना
       - name: Upload APK Artifact
         uses: actions/upload-artifact@v4
         with:
